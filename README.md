@@ -3,70 +3,56 @@
   <p><a href="./README_ZH.md">查看中文</a></p>
 </div>
 
-Brief introduction to repository.
+This repository contains the open-source assets from MindSpore competitions, like the [Ascend AI Innovation Competition - MindSpore Model Development Challenge](https://www.hiascend.com/developer/contests/details/21ffd6733ab54dc4b6b686a242c5d586).
 
 ## 📢 News
 
-- **2025-10-21 [Course Update]**：The XXX course has been updated with a new chapter on XXX, including complete videos, slides, and code examples. ([*View details*](xxx))
-- **2025-10-18 [Feature Optimization]**：Repository refactored for clearer course resource navigation; added CI pipeline for more standardized contributions. ([*View details*](xxx))
-- **2025-10-10 [Bug Fix]**：Fixed the xxx issue — thanks to @username for the PR contribution. ([View details](pr_link))
+- **2025-10-21 「Open Source」**: Check out the winning projects from the Ascend AI Innovation Competition - MindSpore Model Development Challenge, now open-sourced! ([*View details*](xxx))
 
-## Prerequisites
+## Competition Links
 
-Before starting this course, you should be familiar with:
+<table >
+  <tr>
+    <th>Name</th>
+    <th>Competition Link</th>
+    <th>Submission Link</th>
+  </tr>
+  <tr>
+    <td rowspan="3">2024 Ascend AI Innovation Competition - MindSpore Model Development Challenge</td> 
+    <td>
+      <a href="https://www.hiascend.com/developer/contests/details/52a4b93be4954660a3c2c9efa3bb279d?module=c895ee1f2c654e6a8efe459d78c8cd1f">Model Migration Challenge</a></td>
+    <td>
+      <a href="./2024-Ascend-Innovation-Contest/topic1-transfer">Link</a> 
+    </td> 
+  </tr>
+  <tr>
+    <td>
+      <a href="https://www.hiascend.com/developer/contests/details/c40cacdb4fa347bd8b378ad881e1e80e?module=52d78eec65a74fc8b9688a750a6b9d0f">Inference Tuning Challenge</a></td>
+    <td>
+      <a href="./2024-Ascend-Innovation-Contest/topic2-finetune/">Link</a> 
+    </td> 
+  </tr>
+  <tr>
+    <td>
+      <a href="https://www.hiascend.com/developer/contests/details/b51e749ad7c148308f11ef64904a33e9?module=f3ec234e23be4e7084b27eb426031087">Model Fine-tuning Challenge</a></td>
+    <td>
+      <a href="./2024-Ascend-Innovation-Contest/topic3-inference/">Link</a> 
+    </td> 
+  </tr>
+  <tr>
+    <td rowspan="2">2025 Ascend AI Innovation Competition - MindSpore Model Development Challenge</td> 
+    <td>
+      <a href="https://www.hiascend.com/developer/contests/details/21ffd6733ab54dc4b6b686a242c5d586?module=e3e5672b8ae44bb4b2c1bdfed236a702">Inference Optimization Challenge</a></td>
+    <td rowspan="2">
+      <a href="./2025-Ascend-Innovation-Contest/S1/">Link</a> 
+    </td> 
+  </tr>
+  <tr>
+    <td>
+      <a href="https://mp.weixin.qq.com/s/ITHLEqEXew03yHcmdt6cSg">List of Winners​ </a></td>
+  </tr>
+</table>
 
-- Basic Python programming
-- Basic Linux commands
-- Using Jupyter Notebook
-- Using Docker images
-
-You can take the Prerequisite Test (*Coming Soon*) to assess your readiness.
-
-## Environment Setup
-
-To ensure all example code runs smoothly, set up your environment using one of the following methods. For details, see [Set Up Development Environment](https://github.com/mindspore-courses/competition/wiki/Set-Up-Development-Environment) in Wiki.
-
-### Install Dependencies
-
-Confirm your Python version meets the course requirements, then run:
-
-```bash
-pip install -r requirements.txt
-```
-
-### Use Docker Image (*Coming Soon*)
-
-Prebuilt Dockerfiles are provided to simplify environment setup.
-
-You can find all course images in the [dockerfile](./dockerfile/) directory and pull the one that fits your hardware:
-
-For details, see [Using Docker Images](https://github.com/mindspore-courses/competition/wiki/Set-Up-Development-Environment) in Wiki.
-
-## Course Content
-
-| No. | Lesson  | Description      | Learning Resource        | Certification |
-| :-- | :------ | :--------------- | :----------------------- | :---------- |
-| 1   | xxx     | xxx              | [Slides](link) · [Code](link) · [Video](link) · [Cloud Lab](link) · [Learning Path](link) |  |
-| 2   | xxx     | xxx              | [Slides](link) · [Code](link) · [Video](link) · [Cloud Lab](link) · [Learning Path](link) | [Beginner Certification](link) |
-| 3   | xxx     | xxx              | [Slides](link) · [Code](link) · [Video](link) · [Cloud Lab](link) · [Learning Path](link) |  |
-| 4   | xxx     | xxx              | [Slides](link) · [Code](link) · [Video](link) · [Cloud Lab](link) · [Learning Path](link) | [Intermediate Certification](link) |
-
-*“Cloud Lab” = interactive sandbox with prebuilt environment & resources.*
-
-## Version Management
-
-This repository is updated in sync with **MindSpore** and the **MindSpore NLP** Suite.
-
-New releases of this repository are published approximately **every six months**.
-
-| Branch/Version  | Python | MindSpore | MindSpore NLP |
-| :------ | :----- |:------ |:------ |
-| master | xxx    | xxx    | xxx    |
-| r1.0   | xxx    | xxx    | xxx    |
-
-## FAQ
-
-See the [FAQ](https://github.com/mindspore-courses/competition/wiki/Developer-FAQ) in the Wiki.
 
 ## Contributing
 

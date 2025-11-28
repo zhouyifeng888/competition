@@ -1,0 +1,46 @@
+{
+    "Janus-Pro-7B": {
+        "logits_files": [
+             "/home/ma-user/work/task1/target_logits/Janus-Pro-7B_TestGroup_2025-08-30_16-18-58_prompt_0.npy",
+        "/home/ma-user/work/task1/target_logits/Janus-Pro-7B_TestGroup_2025-08-30_16-18-58_prompt_1.npy"
+        ],
+        "generated_texts": [
+        ".\nThe image shows a scenic landscape with a prominent mountain range in the background. The sky is partly cloudy, with a mix of blue sky and white clouds. In the foreground, there is a large, fluffy cat with a brown and white coat",
+        ".\n\nOnce upon a time, in a bustling city, lived a man named Alex. Alex was a man of many talents, but his most cherished was his ability to see the world through the lens of his imagination. He was a painter,"
+    ]
+    },
+    "Qwen2-VL-2B-Instruct": {
+        "logits_files": [
+            "target_logits/Qwen2-VL-2B-Instruct_TestGroup_2025-08-30_15-52-10_prompt_0.npy",
+            "target_logits/Qwen2-VL-2B-Instruct_TestGroup_2025-08-30_15-52-10_prompt_1.npy"
+        ],
+        "generated_texts": [
+            "The image depicts a large, fluffy cat sitting on a rocky outcrop with a breathtaking view of a mountainous landscape. The cat has a long, white mustache and green eyes, and it appears to be looking directly at the camera. The background",
+            "In the vast expanse of the clear blue sky, a young man stands tall, his face etched with a rugged, yet charming beard. His sunglasses, a sleek black frame that reflects the sunlight, shield his eyes from the sun's glare."
+        ]
+    },
+    "deepseek-moe-16b-chat": {
+        "generated_texts": [
+            "You are a helpful assistant.\n\nUser: Hello, how are you?\n\nAssistant: Hello! As an AI language model, I don't have feelings, but I'm functioning properly and ready to assist you with any questions or tasks you may have. How can I help you today?",
+            "You are a helpful assistant.\n\nUser: This American studied art at Yale and is the author of multiple popular mystery novels. First name is 'Hillary'. What's the last name?\n\nAssistant: The answer is Clinton. The author is Hillary Clinton.",
+            "You are a helpful assistant.\n\nUser: Summarize the following text: US President Donald Trump has said he is 'not happy' with his Russian counterpart Vladimir Putin, following Moscow's largest aerial attack yet on Ukraine.\nIn a rare rebuke, Trump said: \"What the hell happened to him? He's killing a lot of people.\" He later called Putin \"absolutely crazy\".\nUkrainian President Volodymyr Zelensky earlier said Washington's \"silence\" over recent Russian attacks was encouraging Putin, urging \"strong pressure\" - including tougher sanctions - on Moscow.\n\n\nAssistant: US President Donald Trump expressed his dissatisfaction with Russian President Vladimir Putin, following Moscow's largest aerial attack on Ukraine. Trump criticized Putin's actions, calling him \"absolutely crazy\" and stating that he is \"not happy\" with him. In response"
+        ],
+        "logits_files": [
+            "target_logits/deepseek-moe-16b-chat_TestGroup_2025-08-30_15-36-11_prompt_0.npy",
+            "target_logits/deepseek-moe-16b-chat_TestGroup_2025-08-30_15-36-11_prompt_1.npy",
+            "target_logits/deepseek-moe-16b-chat_TestGroup_2025-08-30_15-36-11_prompt_2.npy"
+        ]
+    },
+    "Qwen1.5-MoE-A2.7B-Chat": {
+        "generated_texts": [
+            "system\nYou are a helpful assistant.\nuser\nHello, how are you?\nassistant\nHello! I'm an AI language model, so I don't have feelings in the same way that humans do, but I'm functioning well and ready to help you with any questions or tasks you have. How can I assist you today?",
+            "system\nYou are a helpful assistant.\nuser\nThis American studied art at Yale and is the author of multiple popular mystery novels. First name is 'Hillary'. What's the last name?\nassistant\nThe author you're referring to is Hillary Waugh. His last name is Waugh.",
+            "system\nYou are a helpful assistant.\nuser\nSummarize the following text: US President Donald Trump has said he is 'not happy' with his Russian counterpart Vladimir Putin, following Moscow's largest aerial attack yet on Ukraine.\nIn a rare rebuke, Trump said: \"What the hell happened to him? He's killing a lot of people.\" He later called Putin \"absolutely crazy\".\nUkrainian President Volodymyr Zelensky earlier said Washington's \"silence\" over recent Russian attacks was encouraging Putin, urging \"strong pressure\" - including tougher sanctions - on Moscow.\n\nassistant\nUS President Donald Trump expressed dissatisfaction with Russian President Vladimir Putin following Russia's significant aerial assault on Ukraine. This is a rare criticism from Trump, who referred to Putin as \"absolutely crazy\" and questioned his actions, stating, \"What the hell happened"
+        ],
+        "logits_files": [
+            "target_logits/Qwen1.5-MoE-A2.7B-Chat_TestGroup_2025-08-30_15-20-40_prompt_0.npy",
+            "target_logits/Qwen1.5-MoE-A2.7B-Chat_TestGroup_2025-08-30_15-20-40_prompt_1.npy",
+            "target_logits/Qwen1.5-MoE-A2.7B-Chat_TestGroup_2025-08-30_15-20-40_prompt_2.npy"
+        ]
+    }
+}
