@@ -1,0 +1,167 @@
+From 0ad19f384b6b3b874c55e710228f3c0ea9eb03cb Mon Sep 17 00:00:00 2001
+From: zhouyifeng <984778782@qq.com>
+Date: Tue, 16 Sep 2025 17:29:21 +0800
+Subject: [PATCH 1/4] No.1
+
+---
+ .../models/qwen2_moe/modeling_qwen2_moe.py    | 131 +++++++++++++++---
+ 1 file changed, 114 insertions(+), 17 deletions(-)
+
+diff --git a/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py b/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py
+index 3cbf820e..f4b839a1 100644
+--- a/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py
++++ b/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py
+@@ -427,13 +427,71 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
+ 
+         # gating
+         self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)
+-        self.experts = nn.ModuleList(
+-            [Qwen2MoeMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
+-        )
++        self.experts_list = [Qwen2MoeMLP(config, intermediate_size=config.moe_intermediate_size).jit() for _ in range(self.num_experts)]
++        self.experts = nn.ModuleList(self.experts_list)
+ 
+         self.shared_expert = Qwen2MoeMLP(config, intermediate_size=config.shared_expert_intermediate_size)
+         self.shared_expert_gate = nn.Linear(config.hidden_size, 1, bias=False)
+-
++        
++        self.act=ACT2FN[config.hidden_act].jit()
++    
++    # @mindspore.jit(jit_config=mindspore.JitConfig(jit_syntax_level='STRICT'))
++    def test2(self, all_idx, routing_weights, hidden_states, hidden_dim,
++              gate_proj1, up_proj1, down_proj1, gate_proj2, up_proj2, down_proj2,
++              gate_proj3, up_proj3, down_proj3, gate_proj4, up_proj4, down_proj4):
++        
++        current_state = hidden_states[None, 0].reshape(-1, hidden_dim)
++        
++        i = 0
++        idx1 = all_idx[i:i+1]
++        i = 1
++        idx2 = all_idx[i:i+1]
++        i = 2
++        idx3 = all_idx[i:i+1]
++        i = 3
++        idx4 = all_idx[i:i+1]
++        
++        r1 = routing_weights[0, idx1, None]
++        r2 = routing_weights[0, idx2, None]
++        r3 = routing_weights[0, idx3, None]
++        r4 = routing_weights[0, idx4, None]
++        
++        g1 = F.linear(current_state, gate_proj1, None)
++        g2 = F.linear(current_state, gate_proj2, None)
++        g3 = F.linear(current_state, gate_proj3, None)
++        g4 = F.linear(current_state, gate_proj4, None)
++        
++        u1 = F.linear(current_state, up_proj1, None)
++        u2 = F.linear(current_state, up_proj2, None)
++        u3 = F.linear(current_state, up_proj3, None)
++        u4 = F.linear(current_state, up_proj4, None)
++        
++        a1 = self.act(g1)
++        a2 = self.act(g2)
++        a3 = self.act(g3)
++        a4 = self.act(g4)
++        
++        u1 = u1*a1
++        u2 = u2*a2
++        u3 = u3*a3
++        u4 = u4*a4
++        
++        d1 = F.linear(u1, down_proj1, None)
++        d2 = F.linear(u2, down_proj2, None)
++        d3 = F.linear(u3, down_proj3, None)
++        d4 = F.linear(u4, down_proj4, None)
++        
++        current_hidden_states1 = d1*r1
++        current_hidden_states2 = d2*r2
++        current_hidden_states3 = d3*r3
++        current_hidden_states4 = d4*r4
++        
++        current_hidden_states = current_hidden_states1+current_hidden_states2+current_hidden_states3+current_hidden_states4
++        
++        final_hidden_states = mindspore.mint.unsqueeze(current_hidden_states.to(hidden_states.dtype), dim=0)
++        
++        return final_hidden_states
++    
+     def forward(self, hidden_states: mindspore.Tensor) -> mindspore.Tensor:
+         batch_size, sequence_length, hidden_dim = hidden_states.shape
+         hidden_states = hidden_states.view(-1, hidden_dim)
+@@ -454,22 +512,61 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
+         # One hot encode the selected experts to create an expert mask
+         # this will be used to easily index which expert is going to be sollicitated
+         expert_mask = nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+-
+-        # Loop over all available experts in the model and perform the computation on each expert
+-        for expert_idx in range(self.num_experts):
+-            expert_layer = self.experts[expert_idx]
+-            idx, top_x = ops.nonzero(expert_mask[expert_idx], as_tuple=True)
+-
+-            # Index the correct hidden states and compute the expert hidden state for
+-            # the current expert. We need to make sure to multiply the output hidden
+-            # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
+-            if 0 not in idx.shape:
++        
++        
++        
++        
++        
++        
++        all_expert_id, all_idx, all_top_x = ops.nonzero(expert_mask, as_tuple=True)
++        
++        if sequence_length>1:
++            for i in range(all_expert_id.shape[0]):
++                expert_idx = all_expert_id[i]
++                expert_layer = self.experts_list[expert_idx]
++                
++                idx = all_idx[i:i+1]
++                top_x = all_top_x[i:i+1]
++    
+                 current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+                 current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
+-
+-                # However `index_add_` only support torch tensors for indexing so we'll use
+-                # the `top_x` tensor here.
++                
+                 final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
++        else:
++            expert_idx1 = all_expert_id[0]
++            expert_idx2 = all_expert_id[1]
++            expert_idx3 = all_expert_id[2]
++            expert_idx4 = all_expert_id[3]
++            
++            expert_layer1 = self.experts_list[expert_idx1]
++            expert_layer2 = self.experts_list[expert_idx2]
++            expert_layer3 = self.experts_list[expert_idx3]
++            expert_layer4 = self.experts_list[expert_idx4]
++            
++            final_hidden_states = self.test2(all_idx, routing_weights, hidden_states, hidden_dim,
++                                              expert_layer1.gate_proj.weight, expert_layer1.up_proj.weight, expert_layer1.down_proj.weight,
++                                              expert_layer2.gate_proj.weight, expert_layer2.up_proj.weight, expert_layer2.down_proj.weight,
++                                              expert_layer3.gate_proj.weight, expert_layer3.up_proj.weight, expert_layer3.down_proj.weight,
++                                              expert_layer4.gate_proj.weight, expert_layer4.up_proj.weight, expert_layer4.down_proj.weight)
++        
++        
++        
++
++        # # Loop over all available experts in the model and perform the computation on each expert
++        # for expert_idx in range(self.num_experts):
++        #     expert_layer = self.experts[expert_idx]
++        #     idx, top_x = ops.nonzero(expert_mask[expert_idx], as_tuple=True)
++
++        #     # Index the correct hidden states and compute the expert hidden state for
++        #     # the current expert. We need to make sure to multiply the output hidden
++        #     # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
++        #     if 0 not in idx.shape:
++        #         current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
++        #         current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
++
++        #         # However `index_add_` only support torch tensors for indexing so we'll use
++        #         # the `top_x` tensor here.
++        #         final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
+ 
+         shared_expert_output = self.shared_expert(hidden_states)
+         shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states)) * shared_expert_output
+-- 
+2.47.1.windows.2
+

@@ -1,0 +1,775 @@
+From b54440789e9f773517c585a8cf562845495b83b3 Mon Sep 17 00:00:00 2001
+From: zhouyifeng <984778782@qq.com>
+Date: Thu, 18 Sep 2025 20:01:12 +0800
+Subject: [PATCH 2/4] No.2
+
+---
+ mindnlp/core/ops/creation.py                  |  17 +-
+ .../models/deepseek/modeling_deepseek.py      | 172 +++++++++-
+ .../models/qwen2_moe/modeling_qwen2_moe.py    | 321 +++++++++++++-----
+ 3 files changed, 396 insertions(+), 114 deletions(-)
+
+diff --git a/mindnlp/core/ops/creation.py b/mindnlp/core/ops/creation.py
+index 8d1faf26..4e1a4afa 100644
+--- a/mindnlp/core/ops/creation.py
++++ b/mindnlp/core/ops/creation.py
+@@ -130,14 +130,15 @@ def empty(*size, dtype=None, device=None):
+         size = size[0]
+     if dtype is None:
+         dtype = get_default_dtype()
+-    if has_empty:
+-        out = mindspore._c_expression.pyboost_empty([size, dtype, device])
+-        if not isinstance(out, mindspore.Tensor):
+-            out = out.get_value()
+-        else:
+-            return out
+-    else:
+-        out = CTensor(dtype=dtype, shape=size)
++    # if has_empty:
++    #     out = mindspore._c_expression.pyboost_empty([size, dtype, device])
++    #     if not isinstance(out, mindspore.Tensor):
++    #         out = out.get_value()
++    #     else:
++    #         return out
++    # else:
++    #     out = CTensor(dtype=dtype, shape=size)
++    out = CTensor(dtype=dtype, shape=size)
+     return mindspore.Tensor(out)
+ 
+ # empty_like
+diff --git a/mindnlp/transformers/models/deepseek/modeling_deepseek.py b/mindnlp/transformers/models/deepseek/modeling_deepseek.py
+index c695b944..cfce674d 100644
+--- a/mindnlp/transformers/models/deepseek/modeling_deepseek.py
++++ b/mindnlp/transformers/models/deepseek/modeling_deepseek.py
+@@ -18,10 +18,13 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ """ MindNLP DeepSeek model."""
++import gc
++import time
+ import math
+ import warnings
+ from typing import List, Optional, Tuple, Union
+ import mindspore
++from mindspore import mint
+ from mindnlp.core import nn, ops, no_grad
+ from mindnlp.core.nn import functional as F
+ from mindnlp.common.activations import ACT2FN
+@@ -371,24 +374,102 @@ class DeepseekMoE(nn.Module):
+         self.num_experts_per_tok = config.num_experts_per_tok
+         self.experts = nn.ModuleList([DeepseekMLP(config, intermediate_size=config.moe_intermediate_size) for i in
+                                       range(config.n_routed_experts)])
+-        self.gate = MoEGate(config)
++        # self.gate = MoEGate(config)
++        self.gate = nn.Linear(config.hidden_size, config.n_routed_experts, bias=False)
+         if config.n_shared_experts is not None:
+             intermediate_size = config.moe_intermediate_size * config.n_shared_experts
+             self.shared_experts = DeepseekMLP(config=config, intermediate_size=intermediate_size)
+-
++        
++        self.act=ACT2FN[config.hidden_act]
++    
+     def forward(self, hidden_states):
+-        identity = hidden_states
+-        orig_shape = hidden_states.shape
+-        topk_idx, topk_weight, aux_loss = self.gate(hidden_states)
+-        hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+-        flat_topk_idx = topk_idx.view(-1)
+-        if self.training:
+-            raise NotImplementedError("Training is not supported yet.")
+-        else:
+-            y = self.moe_infer(hidden_states, flat_topk_idx, topk_weight.view(-1, 1)).view(*orig_shape)
++        # print(f'==============================hidden_states.shape:{hidden_states.shape}')
++        
++        batch_size, sequence_length, hidden_dim = hidden_states.shape
++        hidden_states = hidden_states.view(-1, hidden_dim)
++        router_logits = self.gate(hidden_states)
++        router_scores=mint.zeros_like(router_logits)
++        routing_weights = F.softmax(router_logits, dim=-1)
++        routing_weights, selected_experts = mint.topk(routing_weights, self.num_experts_per_tok, dim=-1)
++        # if self.norm_topk_prob:
++        #     routing_weights /= ops.sum(routing_weights, dim=-1, keepdim=True)
++        router_scores=mint.scatter_add(router_scores,-1,selected_experts,routing_weights)
++
++        final_hidden_states = self.act(mint.matmul(hidden_states, self.w1))*mint.matmul(hidden_states, self.w3)
++        final_hidden_states = mint.bmm(final_hidden_states, self.w2)*ops.transpose(router_scores,0,1).unsqueeze(-1)
++        final_hidden_states = mint.sum(final_hidden_states,dim=0)
++        
+         if self.config.n_shared_experts is not None:
+-            y = y + self.shared_experts(identity)
+-        return y
++            shared_expert_output = self.shared_experts(hidden_states)
++            final_hidden_states = final_hidden_states + shared_expert_output
++        # print(f'========================moe out:{final_hidden_states.mean()}')
++        return final_hidden_states.view(batch_size, sequence_length, hidden_dim)
++        
++        
++        
++        
++        # batch_size, sequence_length, hidden_dim = hidden_states.shape
++        # hidden_states = hidden_states.view(-1, hidden_dim)
++        # # router_logits: (batch * sequence_length, n_experts)
++        # router_logits = self.gate(hidden_states)
++
++        # routing_weights = F.softmax(router_logits, dim=1)
++        # # routing_weights = routing_weights.to(hidden_states.dtype)
++        # routing_weights, selected_experts = ops.topk(routing_weights, self.num_experts_per_tok, dim=-1)
++        # # if self.norm_topk_prob:
++        # #     routing_weights /= ops.sum(routing_weights, dim=-1, keepdim=True)
++        # # we cast back to the input dtype
++        
++
++        # final_hidden_states = ops.zeros(
++        #     (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype
++        # )
++
++        # # One hot encode the selected experts to create an expert mask
++        # # this will be used to easily index which expert is going to be sollicitated
++        # expert_mask = nn.functional.one_hot(selected_experts, num_classes=self.config.n_routed_experts).permute(2, 1, 0)
++
++        # # Loop over all available experts in the model and perform the computation on each expert
++        # for expert_idx in range(self.config.n_routed_experts):
++        #     expert_layer = self.experts[expert_idx]
++        #     idx, top_x = ops.nonzero(expert_mask[expert_idx], as_tuple=True)
++
++        #     # Index the correct hidden states and compute the expert hidden state for
++        #     # the current expert. We need to make sure to multiply the output hidden
++        #     # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
++        #     if 0 not in idx.shape:
++        #         current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
++        #         current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
++
++        #         # However `index_add_` only support torch tensors for indexing so we'll use
++        #         # the `top_x` tensor here.
++        #         final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
++        
++        # if self.config.n_shared_experts is not None:
++        #     shared_expert_output = self.shared_experts(hidden_states)
++        #     final_hidden_states = final_hidden_states + shared_expert_output
++        # print(f'========================moe out:{final_hidden_states.mean()}')
++        # return final_hidden_states
++        
++        
++        
++        
++        # identity = hidden_states
++        # orig_shape = hidden_states.shape
++        # topk_idx, topk_weight, aux_loss = self.gate(hidden_states)
++        # hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
++        # flat_topk_idx = topk_idx.view(-1)
++        # if self.training:
++        #     raise NotImplementedError("Training is not supported yet.")
++        # else:
++        #     # s = time.time()
++        #     y = self.moe_infer(hidden_states, flat_topk_idx, topk_weight.view(-1, 1)).view(*orig_shape)
++        #     # t = time.time()
++        #     # print(f'========moe_infer time:{t-s}==========')
++        # if self.config.n_shared_experts is not None:
++        #     y = y + self.shared_experts(identity)
++        # print(f'========================moe out:{y.mean()}')
++        # return y
+ 
+     @no_grad()
+     def moe_infer(self, x, flat_expert_indices, flat_expert_weights):
+@@ -407,20 +488,53 @@ class DeepseekMoE(nn.Module):
+         #     expert_out.mul_(flat_expert_weights[idxs[start_idx:end_idx]])
+         #     expert_cache.scatter_reduce_(0, exp_token_idx.view(-1, 1).repeat(1, x.shape[-1]), expert_out, reduce='sum')
+         # return expert_cache
++        
++        # print(f'============x.shape:{x.shape}')
++        
++        # s = time.time()
+         expert_cache = ops.zeros_like(x)
++        # t = time.time()
++        # print(f'======zeros_like time:{t-s}')
++        
++        # s = time.time()
+         idxs = flat_expert_indices.argsort()
++        # t = time.time()
++        # print(f'======argsort time:{t-s}')
++        
+         tokens_per_expert = flat_expert_indices.bincount().cumsum(0)
+         token_idxs = idxs // self.num_experts_per_tok
++        # print(f'============tokens_per_expert:{tokens_per_expert}')
++        # print(f'============tokens_per_expert.shape:{tokens_per_expert.shape}')
+         for i, end_idx in enumerate(tokens_per_expert):
+             start_idx = 0 if i == 0 else tokens_per_expert[i-1]
+             if start_idx == end_idx:
+                 continue
+             expert = self.experts[i]
++            
++            # s = time.time()
+             exp_token_idx = token_idxs[start_idx:end_idx]
++            # t = time.time()
++            # print(f'======token_idxs[start_idx:end_idx] time:{t-s}')
++            
++            # s = time.time()
+             expert_tokens = x[exp_token_idx]
++            # t = time.time()
++            # print(f'======x[exp_token_idx] time:{t-s}')
++            
++            # s = time.time()
+             expert_out = expert(expert_tokens)
++            # t = time.time()
++            # print(f'======expert time:{t-s}')
++            
++            # s = time.time()
+             expert_out = expert_out.mul(flat_expert_weights[idxs[start_idx:end_idx]])
++            # t = time.time()
++            # print(f'======expert_out.mul time:{t-s}')
++            
++            # s = time.time()
+             expert_cache = mindspore.mint.scatter_add(expert_cache, 0, exp_token_idx.view(-1, 1).tile((1, x.shape[-1])), expert_out)
++            # t = time.time()
++            # print(f'======scatter_add time:{t-s}')
+         return expert_cache
+ 
+ # class AddAuxiliaryLoss(mindnlp.core.autograd.Function):
+@@ -745,7 +859,8 @@ class DeepseekAttention(nn.Module):
+         if past_key_value is not None:
+             cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
+             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+-
++        
++        # attn_output = mindspore.ops.flash_attention_score(query_states, key_states, value_states, query_states.shape[1],input_layout='BNSD',scalar_value=1/math.sqrt(self.head_dim),attn_mask=mindspore.mint.narrow(attention_mask,-1,0,key_states.shape[-2]).bool())
+         key_states = repeat_kv(key_states, self.num_key_value_groups)
+         value_states = repeat_kv(value_states, self.num_key_value_groups)
+ 
+@@ -918,12 +1033,14 @@ class DeepseekModel(DeepseekPreTrainedModel):
+ 
+     def __init__(self, config: DeepseekConfig):
+         super().__init__(config)
++        self.config = config
+         self.padding_idx = config.pad_token_id
+         self.vocab_size = config.vocab_size
+ 
+         self.embed_tokens = nn.Embedding(
+             config.vocab_size, config.hidden_size, self.padding_idx
+         )
++        print(f'==============================config.num_hidden_layers:{config.num_hidden_layers}======================================')
+         self.layers = nn.ModuleList(
+             [
+                 DeepseekDecoderLayer(config, layer_idx)
+@@ -936,6 +1053,10 @@ class DeepseekModel(DeepseekPreTrainedModel):
+         self.gradient_checkpointing = False
+         # Initialize weights and apply final processing
+         self.post_init()
++        
++        self.is_combined = False
++        self.stack = mindspore.ops.Stack(axis=0).set_device("CPU")
++        self.transpose = mindspore.ops.Transpose().set_device("CPU")
+ 
+     def get_input_embeddings(self):
+         return self.embed_tokens
+@@ -956,6 +1077,29 @@ class DeepseekModel(DeepseekPreTrainedModel):
+         output_hidden_states: Optional[bool] = None,
+         return_dict: Optional[bool] = None,
+     ) -> Union[Tuple, BaseModelOutputWithPast]:
++        
++        if not self.is_combined:
++            for i in range(len(self.layers)):
++                decoder_layer = self.layers[i]
++                if type(decoder_layer.mlp) == DeepseekMoE:
++                    # for j in range(self.config.n_routed_experts):
++                    #     m1 = decoder_layer.mlp.experts[j].gate_proj.weight.T.mean()
++                    #     m2 = decoder_layer.mlp.experts[j].down_proj.weight.T.mean()
++                    #     m3 = decoder_layer.mlp.experts[j].up_proj.weight.T.mean()
++                    #     print(m1+m2+m3)
++                    decoder_layer.mlp.w1=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].gate_proj.weight.T for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    decoder_layer.mlp.w2=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].down_proj.weight.T for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    decoder_layer.mlp.w3=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].up_proj.weight.T for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    # decoder_layer.mlp.w1=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].gate_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    # decoder_layer.mlp.w2=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].down_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    # decoder_layer.mlp.w3=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].up_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    
++                    del decoder_layer.mlp.experts
++                    gc.collect()
++                    decoder_layer.mlp.experts=None
++                    print(f'================decoder_layer {i} combine finished')
++            self.is_combined=True
++        
+         output_attentions = (
+             output_attentions
+             if output_attentions is not None
+diff --git a/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py b/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py
+index f4b839a1..43deed13 100644
+--- a/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py
++++ b/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py
+@@ -19,15 +19,19 @@
+ # limitations under the License.
+ """MindSpore Qwen2MoE model."""
+ 
++import gc
++import time
+ import math
+ from typing import List, Optional, Tuple, Union
+ 
+ import mindspore
++from mindspore import mint
+ import mindnlp.core.nn.functional as F
+ from mindnlp.core import nn, ops
+ from mindnlp.core.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+ 
+ from ....common.activations import ACT2FN
++from ...modeling_rope_utils import ROPE_INIT_FUNCTIONS
+ from ...cache_utils import Cache, DynamicCache, StaticCache
+ from ...modeling_outputs import (
+     MoeCausalLMOutputWithPast,
+@@ -193,40 +197,101 @@ class Qwen2MoeRMSNorm(nn.Module):
+ 
+ 
+ # Copied from transformers.models.mixtral.modeling_mixtral.MixtralRotaryEmbedding with Mixtral->Qwen2Moe
++# class Qwen2MoeRotaryEmbedding(nn.Module):
++#     def __init__(self, dim, max_position_embeddings=2048, base=10000):
++#         super().__init__()
++
++#         self.dim = dim
++#         self.max_position_embeddings = max_position_embeddings
++#         self.base = base
++#         inv_freq = 1.0 / (self.base ** (ops.arange(0, self.dim, 2, dtype=mindspore.int64).float() / self.dim))
++#         self.register_buffer("inv_freq", inv_freq, persistent=False)
++
++#         # Build here to make `ops.jit.trace` work.
++#         self._set_cos_sin_cache(
++#             seq_len=max_position_embeddings, dtype=ops.get_default_dtype()
++#         )
++
++#     def _set_cos_sin_cache(self, seq_len, dtype):
++#         self.max_seq_len_cached = seq_len
++#         t = ops.arange(self.max_seq_len_cached, dtype=mindspore.int64).type_as(self.inv_freq)
++
++#         freqs = ops.outer(t, self.inv_freq)
++#         # Different from paper, but it uses a different permutation in order to obtain the same calculation
++#         emb = ops.cat((freqs, freqs), dim=-1)
++#         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
++#         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
++
++#     def forward(self, x, seq_len=None):
++#         # x: [bs, num_attention_heads, seq_len, head_size]
++#         if seq_len > self.max_seq_len_cached:
++#             self._set_cos_sin_cache(seq_len=seq_len, dtype=x.dtype)
++
++#         return (
++#             self.cos_cached[:seq_len].to(dtype=x.dtype),
++#             self.sin_cached[:seq_len].to(dtype=x.dtype),
++#         )
++
+ class Qwen2MoeRotaryEmbedding(nn.Module):
+-    def __init__(self, dim, max_position_embeddings=2048, base=10000):
++    def __init__(
++        self,
++        config: Qwen2MoeConfig
++    ):
+         super().__init__()
++        # BC: "rope_type" was originally "type"
++        if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
++            self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
++        else:
++            self.rope_type = "default"
++        self.max_seq_len_cached = config.max_position_embeddings
++        self.original_max_seq_len = config.max_position_embeddings
+ 
+-        self.dim = dim
+-        self.max_position_embeddings = max_position_embeddings
+-        self.base = base
+-        inv_freq = 1.0 / (self.base ** (ops.arange(0, self.dim, 2, dtype=mindspore.int64).float() / self.dim))
++        self.config = config
++        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
++
++        inv_freq, self.attention_scaling = self.rope_init_fn(self.config)
+         self.register_buffer("inv_freq", inv_freq, persistent=False)
++        self.original_inv_freq = self.inv_freq
+ 
+-        # Build here to make `ops.jit.trace` work.
+-        self._set_cos_sin_cache(
+-            seq_len=max_position_embeddings, dtype=ops.get_default_dtype()
+-        )
++    def _dynamic_frequency_update(self, position_ids):
++        """
++        dynamic RoPE layers should recompute `inv_freq` in the following situations:
++        1 - growing beyond the cached sequence length (allow scaling)
++        2 - the current sequence length is in the original scale (avoid losing precision with small sequences)
++        """
++        seq_len = ops.max(position_ids) + 1
++        if seq_len > self.max_seq_len_cached:  # growth
++            inv_freq, self.attention_scaling = self.rope_init_fn(
++                self.config, seq_len=seq_len, **self.rope_kwargs
++            )
++            self.register_buffer("inv_freq", inv_freq, persistent=False)  # TODO joao: may break with compilation
++            self.max_seq_len_cached = seq_len
+ 
+-    def _set_cos_sin_cache(self, seq_len, dtype):
+-        self.max_seq_len_cached = seq_len
+-        t = ops.arange(self.max_seq_len_cached, dtype=mindspore.int64).type_as(self.inv_freq)
++        if seq_len < self.original_max_seq_len and self.max_seq_len_cached > self.original_max_seq_len:  # reset
++            self.register_buffer("inv_freq", self.original_inv_freq, persistent=False)
++            self.max_seq_len_cached = self.original_max_seq_len
+ 
+-        freqs = ops.outer(t, self.inv_freq)
+-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
++    # @mindspore.jit(jit_config=mindspore.JitConfig(jit_syntax_level='STRICT'))
++    def forward(self, x, position_ids):
++        # if "dynamic" in self.rope_type:
++        #     self._dynamic_frequency_update(position_ids)
++
++        # Core RoPE block
++        inv_freq = self.inv_freq.view(1, -1, 1).float()
++        inv_freq_expanded = ops.broadcast_to(inv_freq, (position_ids.shape[0], inv_freq.shape[1], 1))
++        # inv_freq_expanded = manual_expand(inv_freq, (position_ids.shape[0], inv_freq.shape[1], 1))
++        position_ids_expanded = ops.unsqueeze(position_ids, 1).float()
++        # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
++        freqs = ops.transpose(ops.matmul(inv_freq_expanded.float(), position_ids_expanded.float()), 1, 2)
+         emb = ops.cat((freqs, freqs), dim=-1)
+-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
+-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
++        cos = emb.cos()
++        sin = emb.sin()
+ 
+-    def forward(self, x, seq_len=None):
+-        # x: [bs, num_attention_heads, seq_len, head_size]
+-        if seq_len > self.max_seq_len_cached:
+-            self._set_cos_sin_cache(seq_len=seq_len, dtype=x.dtype)
++        # Advanced RoPE types (e.g. yarn) apply a post-processing scaling factor, equivalent to scaling attention
++        cos = cos * self.attention_scaling
++        sin = sin * self.attention_scaling
+ 
+-        return (
+-            self.cos_cached[:seq_len].to(dtype=x.dtype),
+-            self.sin_cached[:seq_len].to(dtype=x.dtype),
+-        )
++        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+ 
+ 
+ # Copied from transformers.models.llama.modeling_llama.rotate_half
+@@ -259,8 +324,8 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=1):
+     Returns:
+         `tuple(mindspore.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
+     """
+-    cos = cos[position_ids].unsqueeze(unsqueeze_dim)
+-    sin = sin[position_ids].unsqueeze(unsqueeze_dim)
++    cos = cos.unsqueeze(unsqueeze_dim)
++    sin = sin.unsqueeze(unsqueeze_dim)
+     q_embed = (q * cos) + (rotate_half(q) * sin)
+     k_embed = (k * cos) + (rotate_half(k) * sin)
+     return q_embed, k_embed
+@@ -333,11 +398,11 @@ class Qwen2MoeAttention(nn.Module):
+         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
+         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
+ 
+-        self.rotary_emb = Qwen2MoeRotaryEmbedding(
+-            self.head_dim,
+-            max_position_embeddings=self.max_position_embeddings,
+-            base=self.rope_theta,
+-        )
++        # self.rotary_emb = Qwen2MoeRotaryEmbedding(
++        #     self.head_dim,
++        #     max_position_embeddings=self.max_position_embeddings,
++        #     base=self.rope_theta,
++        # )
+ 
+     def forward(
+         self,
+@@ -348,6 +413,7 @@ class Qwen2MoeAttention(nn.Module):
+         output_attentions: bool = False,
+         use_cache: bool = False,
+         cache_position: Optional[mindspore.Tensor] = None,
++        position_embeddings: Optional[Tuple[mindspore.Tensor, mindspore.Tensor]] = None,
+     ) -> Tuple[mindspore.Tensor, Optional[mindspore.Tensor], Optional[Tuple[mindspore.Tensor]]]:
+         bsz, q_len, _ = hidden_states.shape
+ 
+@@ -368,13 +434,15 @@ class Qwen2MoeAttention(nn.Module):
+                     "with a layer index."
+                 )
+             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
++        # cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
++        cos, sin = position_embeddings
+         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+ 
+         if past_key_value is not None:
+             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
+             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+-
++        
++        # attn_output = mindspore.ops.flash_attention_score(query_states, key_states, value_states, query_states.shape[1],input_layout='BNSD',scalar_value=1/math.sqrt(self.head_dim),attn_mask=mindspore.mint.narrow(attention_mask,-1,0,key_states.shape[-2]).bool())
+         # repeat k/v heads if n_kv_heads < n_heads
+         key_states = repeat_kv(key_states, self.num_key_value_groups)
+         value_states = repeat_kv(value_states, self.num_key_value_groups)
+@@ -493,80 +561,112 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
+         return final_hidden_states
+     
+     def forward(self, hidden_states: mindspore.Tensor) -> mindspore.Tensor:
+-        batch_size, sequence_length, hidden_dim = hidden_states.shape
+-        hidden_states = hidden_states.view(-1, hidden_dim)
+-        # router_logits: (batch * sequence_length, n_experts)
+-        router_logits = self.gate(hidden_states)
+-
+-        routing_weights = F.softmax(router_logits, dim=1, dtype=mindspore.float32)
+-        routing_weights, selected_experts = ops.topk(routing_weights, self.top_k, dim=-1)
+-        if self.norm_topk_prob:
+-            routing_weights /= ops.sum(routing_weights, dim=-1, keepdim=True)
+-        # we cast back to the input dtype
+-        routing_weights = routing_weights.to(hidden_states.dtype)
+-
+-        final_hidden_states = ops.zeros(
+-            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype
+-        )
+-
+-        # One hot encode the selected experts to create an expert mask
+-        # this will be used to easily index which expert is going to be sollicitated
+-        expert_mask = nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
++        # batch_size, sequence_length, hidden_dim = hidden_states.shape
++        # hidden_states = hidden_states.view(-1, hidden_dim)
++        # # router_logits: (batch * sequence_length, n_experts)
++        # router_logits = self.gate(hidden_states)
++
++        # routing_weights = F.softmax(router_logits, dim=1, dtype=mindspore.float32)
++        # routing_weights, selected_experts = ops.topk(routing_weights, self.top_k, dim=-1)
++        # if self.norm_topk_prob:
++        #     routing_weights /= ops.sum(routing_weights, dim=-1, keepdim=True)
++        # # we cast back to the input dtype
++        # routing_weights = routing_weights.to(hidden_states.dtype)
++
++        # final_hidden_states = ops.zeros(
++        #     (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype
++        # )
++
++        # # One hot encode the selected experts to create an expert mask
++        # # this will be used to easily index which expert is going to be sollicitated
++        # expert_mask = nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+         
+         
+         
+         
+         
+         
+-        all_expert_id, all_idx, all_top_x = ops.nonzero(expert_mask, as_tuple=True)
++        # all_expert_id, all_idx, all_top_x = ops.nonzero(expert_mask, as_tuple=True)
++        # # print(f'===========sequence_length:{sequence_length} all_expert_id:{all_expert_id}===============================')
++        # # print(f'==========all_expert_id.shape:{all_expert_id.shape} all_idx.shape:{all_idx.shape}, all_top_x.shape:{all_top_x.shape}===========')
++        # # print(f'======self.num_experts:{self.num_experts}')
+         
+-        if sequence_length>1:
+-            for i in range(all_expert_id.shape[0]):
+-                expert_idx = all_expert_id[i]
+-                expert_layer = self.experts_list[expert_idx]
++        # if sequence_length>1:
++        #     # Loop over all available experts in the model and perform the computation on each expert
++        #     # last_expert_idx = all_expert_id[0]
++        #     # start_idx_index = 0
++        #     # end_idx_index = 0
++        #     for expert_idx in range(self.num_experts):
++        #         expert_layer = self.experts[expert_idx]
++        #         # s = time.time()
++        #         idx, top_x = ops.nonzero(expert_mask[expert_idx], as_tuple=True)
++        #         # t = time.time()
++        #         # print(f'nonzero time:{t-s}')
++        #         # while expert_idx==last_expert_idx:
++        #         #     end_idx_index+=1
++        #         #     if end_idx_index<all_expert_id.shape[0]:
++        #         #         last_expert_idx = all_expert_id[end_idx_index]
++        #         #     else:
++        #         #         break
++        #         # idx = all_idx[start_idx_index:end_idx_index]
++        #         # top_x = all_top_x[start_idx_index:end_idx_index]
++        #         # start_idx_index = end_idx_index
++
++        #         # Index the correct hidden states and compute the expert hidden state for
++        #         # the current expert. We need to make sure to multiply the output hidden
++        #         # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
++        #         if 0 not in idx.shape:
++        #             current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
++        #             current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
++
++        #             # However `index_add_` only support torch tensors for indexing so we'll use
++        #             # the `top_x` tensor here.
++        #             final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
++            
++            
++        #     # for i in range(all_expert_id.shape[0]):
++        #     #     expert_idx = all_expert_id[i]
++        #     #     expert_layer = self.experts_list[expert_idx]
+                 
+-                idx = all_idx[i:i+1]
+-                top_x = all_top_x[i:i+1]
++        #     #     idx = all_idx[i:i+1]
++        #     #     top_x = all_top_x[i:i+1]
+     
+-                current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+-                current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
++        #     #     current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
++        #     #     current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
+                 
+-                final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
+-        else:
+-            expert_idx1 = all_expert_id[0]
+-            expert_idx2 = all_expert_id[1]
+-            expert_idx3 = all_expert_id[2]
+-            expert_idx4 = all_expert_id[3]
++        #     #     final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
++        # else:
++        #     expert_idx1 = all_expert_id[0]
++        #     expert_idx2 = all_expert_id[1]
++        #     expert_idx3 = all_expert_id[2]
++        #     expert_idx4 = all_expert_id[3]
+             
+-            expert_layer1 = self.experts_list[expert_idx1]
+-            expert_layer2 = self.experts_list[expert_idx2]
+-            expert_layer3 = self.experts_list[expert_idx3]
+-            expert_layer4 = self.experts_list[expert_idx4]
++        #     expert_layer1 = self.experts_list[expert_idx1]
++        #     expert_layer2 = self.experts_list[expert_idx2]
++        #     expert_layer3 = self.experts_list[expert_idx3]
++        #     expert_layer4 = self.experts_list[expert_idx4]
+             
+-            final_hidden_states = self.test2(all_idx, routing_weights, hidden_states, hidden_dim,
+-                                              expert_layer1.gate_proj.weight, expert_layer1.up_proj.weight, expert_layer1.down_proj.weight,
+-                                              expert_layer2.gate_proj.weight, expert_layer2.up_proj.weight, expert_layer2.down_proj.weight,
+-                                              expert_layer3.gate_proj.weight, expert_layer3.up_proj.weight, expert_layer3.down_proj.weight,
+-                                              expert_layer4.gate_proj.weight, expert_layer4.up_proj.weight, expert_layer4.down_proj.weight)
++        #     final_hidden_states = self.test2(all_idx, routing_weights, hidden_states, hidden_dim,
++        #                                       expert_layer1.gate_proj.weight, expert_layer1.up_proj.weight, expert_layer1.down_proj.weight,
++        #                                       expert_layer2.gate_proj.weight, expert_layer2.up_proj.weight, expert_layer2.down_proj.weight,
++        #                                       expert_layer3.gate_proj.weight, expert_layer3.up_proj.weight, expert_layer3.down_proj.weight,
++        #                                       expert_layer4.gate_proj.weight, expert_layer4.up_proj.weight, expert_layer4.down_proj.weight)
+         
+         
+-        
+-
+-        # # Loop over all available experts in the model and perform the computation on each expert
+-        # for expert_idx in range(self.num_experts):
+-        #     expert_layer = self.experts[expert_idx]
+-        #     idx, top_x = ops.nonzero(expert_mask[expert_idx], as_tuple=True)
+-
+-        #     # Index the correct hidden states and compute the expert hidden state for
+-        #     # the current expert. We need to make sure to multiply the output hidden
+-        #     # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
+-        #     if 0 not in idx.shape:
+-        #         current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+-        #         current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
++        batch_size, sequence_length, hidden_dim = hidden_states.shape
++        hidden_states = hidden_states.view(-1, hidden_dim)
++        router_logits = self.gate(hidden_states)
++        router_scores=mint.zeros_like(router_logits)
++        routing_weights = F.softmax(router_logits, dim=-1)
++        routing_weights, selected_experts = mint.topk(routing_weights, self.top_k, dim=-1)
++        if self.norm_topk_prob:
++            routing_weights /= ops.sum(routing_weights, dim=-1, keepdim=True)
++        router_scores=mint.scatter_add(router_scores,-1,selected_experts,routing_weights)
+ 
+-        #         # However `index_add_` only support torch tensors for indexing so we'll use
+-        #         # the `top_x` tensor here.
+-        #         final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
++        final_hidden_states = self.act(mint.matmul(hidden_states, self.w1))*mint.matmul(hidden_states, self.w3)
++        final_hidden_states = mint.bmm(final_hidden_states, self.w2)*ops.transpose(router_scores,0,1).unsqueeze(-1)
++        final_hidden_states = mint.sum(final_hidden_states,dim=0)
++        
+ 
+         shared_expert_output = self.shared_expert(hidden_states)
+         shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states)) * shared_expert_output
+@@ -604,6 +704,7 @@ class Qwen2MoeDecoderLayer(nn.Module):
+         output_router_logits: Optional[bool] = False,
+         use_cache: Optional[bool] = False,
+         cache_position: Optional[mindspore.Tensor] = None,
++        position_embeddings: Optional[Tuple[mindspore.Tensor, mindspore.Tensor]] = None,
+         **kwargs,
+     ) -> Tuple[mindspore.Tensor, Optional[Tuple[mindspore.Tensor, mindspore.Tensor]]]:
+         """
+@@ -631,6 +732,7 @@ class Qwen2MoeDecoderLayer(nn.Module):
+         residual = hidden_states
+ 
+         hidden_states = self.input_layernorm(hidden_states)
++        # hidden_states, _ = mindspore.ops.rms_norm(hidden_states, self.input_layernorm.weight, self.input_layernorm.variance_epsilon)
+ 
+         # Self Attention
+         hidden_states, self_attn_weights, present_key_value = self.self_attn(
+@@ -641,12 +743,14 @@ class Qwen2MoeDecoderLayer(nn.Module):
+             output_attentions=output_attentions,
+             use_cache=use_cache,
+             cache_position=cache_position,
++            position_embeddings=position_embeddings,
+         )
+         hidden_states = residual + hidden_states
+ 
+         # Fully Connected
+         residual = hidden_states
+         hidden_states = self.post_attention_layernorm(hidden_states)
++        # hidden_states, _ = mindspore.ops.rms_norm(hidden_states, self.post_attention_layernorm.weight, self.post_attention_layernorm.variance_epsilon)
+ 
+         hidden_states = self.mlp(hidden_states)
+         if isinstance(hidden_states, tuple):
+@@ -700,6 +804,7 @@ class Qwen2MoeModel(Qwen2MoePreTrainedModel):
+ 
+     def __init__(self, config: Qwen2MoeConfig):
+         super().__init__(config)
++        self.config = config
+         self.padding_idx = config.pad_token_id
+         self.vocab_size = config.vocab_size
+ 
+@@ -709,10 +814,16 @@ class Qwen2MoeModel(Qwen2MoePreTrainedModel):
+         )
+         self._attn_implementation = config._attn_implementation
+         self.norm = Qwen2MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
++        
++        self.rotary_emb = Qwen2MoeRotaryEmbedding(config=config)
+ 
+         self.gradient_checkpointing = False
+         # Initialize weights and apply final processing
+         self.post_init()
++        
++        self.is_combined = False
++        self.stack = mindspore.ops.Stack(axis=0).set_device("CPU")
++        self.transpose = mindspore.ops.Transpose().set_device("CPU")
+ 
+     def get_input_embeddings(self):
+         return self.embed_tokens
+@@ -734,6 +845,29 @@ class Qwen2MoeModel(Qwen2MoePreTrainedModel):
+         return_dict: Optional[bool] = None,
+         cache_position: Optional[mindspore.Tensor] = None,
+     ) -> Union[Tuple, MoeModelOutputWithPast]:
++        
++        if not self.is_combined:
++            for i in range(len(self.layers)):
++                decoder_layer = self.layers[i]
++                if type(decoder_layer.mlp) == Qwen2MoeSparseMoeBlock:
++                    # for j in range(self.config.n_routed_experts):
++                    #     m1 = decoder_layer.mlp.experts[j].gate_proj.weight.T.mean()
++                    #     m2 = decoder_layer.mlp.experts[j].down_proj.weight.T.mean()
++                    #     m3 = decoder_layer.mlp.experts[j].up_proj.weight.T.mean()
++                    #     print(m1+m2+m3)
++                    decoder_layer.mlp.w1=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].gate_proj.weight.T for i in range(self.config.num_experts)]),requires_grad=False)
++                    decoder_layer.mlp.w2=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].down_proj.weight.T for i in range(self.config.num_experts)]),requires_grad=False)
++                    decoder_layer.mlp.w3=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].up_proj.weight.T for i in range(self.config.num_experts)]),requires_grad=False)
++                    # decoder_layer.mlp.w1=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].gate_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    # decoder_layer.mlp.w2=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].down_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    # decoder_layer.mlp.w3=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].up_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    
++                    del decoder_layer.mlp.experts
++                    gc.collect()
++                    decoder_layer.mlp.experts=None
++                    print(f'================decoder_layer {i} combine finished')
++            self.is_combined=True
++        
+         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+         output_router_logits = (
+             output_router_logits if output_router_logits is not None else self.config.output_router_logits
+@@ -782,6 +916,8 @@ class Qwen2MoeModel(Qwen2MoePreTrainedModel):
+         )
+ 
+         hidden_states = inputs_embeds
++        
++        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+ 
+         # decoder layers
+         all_hidden_states = () if output_hidden_states else None
+@@ -815,6 +951,7 @@ class Qwen2MoeModel(Qwen2MoePreTrainedModel):
+                     output_router_logits=output_router_logits,
+                     use_cache=use_cache,
+                     cache_position=cache_position,
++                    position_embeddings=position_embeddings,
+                 )
+ 
+             hidden_states = layer_outputs[0]
+-- 
+2.47.1.windows.2
+

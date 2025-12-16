@@ -1,0 +1,299 @@
+From 91f0366ea7afc3718c77940a2569e1e8e45dcc58 Mon Sep 17 00:00:00 2001
+From: zhouyifeng <984778782@qq.com>
+Date: Sun, 9 Nov 2025 11:23:12 +0800
+Subject: [PATCH 4/4] No.4
+
+---
+ .../models/qwen2_moe/modeling_qwen2_moe.py    | 251 ++++++++++--------
+ 1 file changed, 142 insertions(+), 109 deletions(-)
+
+diff --git a/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py b/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py
+index d8952636..bd898d8e 100644
+--- a/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py
++++ b/mindnlp/transformers/models/qwen2_moe/modeling_qwen2_moe.py
+@@ -561,112 +561,145 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
+         return final_hidden_states
+     
+     def forward(self, hidden_states: mindspore.Tensor) -> mindspore.Tensor:
+-        batch_size, sequence_length, hidden_dim = hidden_states.shape
+-        hidden_states = hidden_states.view(-1, hidden_dim)
+-        # router_logits: (batch * sequence_length, n_experts)
+-        router_logits = self.gate(hidden_states)
++        # batch_size, sequence_length, hidden_dim = hidden_states.shape
++        # hidden_states = hidden_states.view(-1, hidden_dim)
++        # # router_logits: (batch * sequence_length, n_experts)
++        # router_logits = self.gate(hidden_states)
+ 
+-        routing_weights = F.softmax(router_logits, dim=1, dtype=mindspore.float32)
+-        routing_weights, selected_experts = ops.topk(routing_weights, self.top_k, dim=-1)
+-        if self.norm_topk_prob:
+-            routing_weights /= ops.sum(routing_weights, dim=-1, keepdim=True)
+-        # we cast back to the input dtype
+-        routing_weights = routing_weights.to(hidden_states.dtype)
++        # routing_weights = F.softmax(router_logits, dim=1, dtype=mindspore.float16)
++        # routing_weights, selected_experts = ops.topk(routing_weights, self.top_k, dim=-1)
++        # if self.norm_topk_prob:
++        #     routing_weights /= ops.sum(routing_weights, dim=-1, keepdim=True)
++        # # we cast back to the input dtype
++        # routing_weights = routing_weights.to(hidden_states.dtype)
+ 
+-        final_hidden_states = ops.zeros(
+-            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype
+-        )
++        # final_hidden_states = ops.zeros(
++        #     (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype
++        # )
+ 
+-        # One hot encode the selected experts to create an expert mask
+-        # this will be used to easily index which expert is going to be sollicitated
+-        expert_mask = nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+-        
+-        
++        # # One hot encode the selected experts to create an expert mask
++        # # this will be used to easily index which expert is going to be sollicitated
++        # expert_mask = nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+         
+         
+         
++        # all_expert_id, all_idx, all_top_x = ops.nonzero(expert_mask, as_tuple=True)
++            
++        # # print(f'===========sequence_length:{sequence_length} all_expert_id:{all_expert_id}===============================')
++        # # print(f'==========all_expert_id.shape:{all_expert_id.shape} all_idx.shape:{all_idx.shape}, all_top_x.shape:{all_top_x.shape}===========')
++        # # print(f'======self.num_experts:{self.num_experts}')
+         
+-        all_expert_id, all_idx, all_top_x = ops.nonzero(expert_mask, as_tuple=True)
+-        # print(f'===========sequence_length:{sequence_length} all_expert_id:{all_expert_id}===============================')
+-        # print(f'==========all_expert_id.shape:{all_expert_id.shape} all_idx.shape:{all_idx.shape}, all_top_x.shape:{all_top_x.shape}===========')
+-        # print(f'======self.num_experts:{self.num_experts}')
+-        
+-        if sequence_length>1:
+-            # Loop over all available experts in the model and perform the computation on each expert
+-            # last_expert_idx = all_expert_id[0]
+-            # start_idx_index = 0
+-            # end_idx_index = 0
+-            for expert_idx in range(self.num_experts):
+-                expert_layer = self.experts[expert_idx]
+-                # s = time.time()
+-                idx, top_x = ops.nonzero(expert_mask[expert_idx], as_tuple=True)
+-                # t = time.time()
+-                # print(f'nonzero time:{t-s}')
+-                # while expert_idx==last_expert_idx:
+-                #     end_idx_index+=1
+-                #     if end_idx_index<all_expert_id.shape[0]:
+-                #         last_expert_idx = all_expert_id[end_idx_index]
+-                #     else:
+-                #         break
+-                # idx = all_idx[start_idx_index:end_idx_index]
+-                # top_x = all_top_x[start_idx_index:end_idx_index]
+-                # start_idx_index = end_idx_index
+-
+-                # Index the correct hidden states and compute the expert hidden state for
+-                # the current expert. We need to make sure to multiply the output hidden
+-                # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
+-                if 0 not in idx.shape:
+-                    current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+-                    current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
+-
+-                    # However `index_add_` only support torch tensors for indexing so we'll use
+-                    # the `top_x` tensor here.
+-                    final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
++        # if sequence_length>1:
+             
++        #     # # all_idx_t = {}
++        #     # # all_top_t = {}
++        #     # # l_idx = []
++        #     # # l_top_x = []
++        #     # # last_id = -1
++        #     # # for i in range(len(all_expert_id)):
++        #     # #     eid = all_expert_id[i]
++        #     # #     if len(l_idx)==0 or eid==last_id:
++        #     # #         l_idx.append(all_idx[i:i+1])
++        #     # #         l_top_x.append(all_top_x[i:i+1])
++        #     # #     else:
++        #     # #         # print(f'================{l_idx}, {l_top_x}')
++        #     # #         all_idx_t[eid]=ops.cat(l_idx, dim=0)
++        #     # #         all_top_t[eid]=ops.cat(l_top_x, dim=0)
++        #     # #         l_idx = []
++        #     # #         l_top_x = []
++        #     # #     last_id = eid
+             
+-            # for i in range(all_expert_id.shape[0]):
+-            #     expert_idx = all_expert_id[i]
+-            #     expert_layer = self.experts_list[expert_idx]
++        #     # # Loop over all available experts in the model and perform the computation on each expert
++        #     # # last_expert_idx = all_expert_id[0]
++        #     # # start_idx_index = 0
++        #     # # end_idx_index = 0
++        #     # for expert_idx in range(self.num_experts):
++        #     #     expert_layer = self.experts[expert_idx]
++        #     #     # s = time.time()
++        #     #     idx, top_x = ops.nonzero(expert_mask[expert_idx], as_tuple=True)
++                
++        #     #     # if expert_idx in all_idx_t.keys():
++        #     #     #     idx = all_idx_t[expert_idx]
++        #     #     #     top_x = all_top_t[expert_idx]
+                 
+-            #     idx = all_idx[i:i+1]
+-            #     top_x = all_top_x[i:i+1]
++        #     #     # t = time.time()
++        #     #     # print(f'nonzero time:{t-s}')
++        #     #     # while expert_idx==last_expert_idx:
++        #     #     #     end_idx_index+=1
++        #     #     #     if end_idx_index<all_expert_id.shape[0]:
++        #     #     #         last_expert_idx = all_expert_id[end_idx_index]
++        #     #     #     else:
++        #     #     #         break
++        #     #     # idx = all_idx[start_idx_index:end_idx_index]
++        #     #     # top_x = all_top_x[start_idx_index:end_idx_index]
++        #     #     # start_idx_index = end_idx_index
++
++        #     #     # Index the correct hidden states and compute the expert hidden state for
++        #     #     # the current expert. We need to make sure to multiply the output hidden
++        #     #     # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
++        #     #     if 0 not in idx.shape:
++        #     #         current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
++        #     #         current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
++
++        #     #         # However `index_add_` only support torch tensors for indexing so we'll use
++        #     #         # the `top_x` tensor here.
++        #     #         final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
++            
++            
++        #     # # for i in range(all_expert_id.shape[0]):
++        #     # #     expert_idx = all_expert_id[i]
++        #     # #     expert_layer = self.experts_list[expert_idx]
++                
++        #     # #     idx = all_idx[i:i+1]
++        #     # #     top_x = all_top_x[i:i+1]
+     
+-            #     current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+-            #     current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
++        #     # #     current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
++        #     # #     current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
+                 
+-            #     final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
+-        else:
+-            expert_idx1 = all_expert_id[0]
+-            expert_idx2 = all_expert_id[1]
+-            expert_idx3 = all_expert_id[2]
+-            expert_idx4 = all_expert_id[3]
++        #     # #     final_hidden_states = final_hidden_states.index_add(0, top_x.int(), current_hidden_states.to(hidden_states.dtype))
++            
++            
++        #     router_scores=mint.zeros_like(router_logits)
++        #     router_scores=mint.scatter_add(router_scores,-1,selected_experts,routing_weights)
++
++        #     final_hidden_states = self.act(mint.matmul(hidden_states, self.w1))*mint.matmul(hidden_states, self.w3)
++        #     final_hidden_states = mint.bmm(final_hidden_states, self.w2)*ops.transpose(router_scores,0,1).unsqueeze(-1)
++        #     final_hidden_states = mint.sum(final_hidden_states,dim=0)
+             
+-            expert_layer1 = self.experts_list[expert_idx1]
+-            expert_layer2 = self.experts_list[expert_idx2]
+-            expert_layer3 = self.experts_list[expert_idx3]
+-            expert_layer4 = self.experts_list[expert_idx4]
++        # else:
++        #     expert_idx1 = all_expert_id[0]
++        #     expert_idx2 = all_expert_id[1]
++        #     expert_idx3 = all_expert_id[2]
++        #     expert_idx4 = all_expert_id[3]
+             
+-            final_hidden_states = self.test2(all_idx, routing_weights, hidden_states, hidden_dim,
+-                                              expert_layer1.gate_proj.weight, expert_layer1.up_proj.weight, expert_layer1.down_proj.weight,
+-                                              expert_layer2.gate_proj.weight, expert_layer2.up_proj.weight, expert_layer2.down_proj.weight,
+-                                              expert_layer3.gate_proj.weight, expert_layer3.up_proj.weight, expert_layer3.down_proj.weight,
+-                                              expert_layer4.gate_proj.weight, expert_layer4.up_proj.weight, expert_layer4.down_proj.weight)
++        #     expert_layer1 = self.experts_list[expert_idx1]
++        #     expert_layer2 = self.experts_list[expert_idx2]
++        #     expert_layer3 = self.experts_list[expert_idx3]
++        #     expert_layer4 = self.experts_list[expert_idx4]
++            
++        #     final_hidden_states = self.test2(all_idx, routing_weights, hidden_states, hidden_dim,
++        #                                       expert_layer1.gate_proj.weight, expert_layer1.up_proj.weight, expert_layer1.down_proj.weight,
++        #                                       expert_layer2.gate_proj.weight, expert_layer2.up_proj.weight, expert_layer2.down_proj.weight,
++        #                                       expert_layer3.gate_proj.weight, expert_layer3.up_proj.weight, expert_layer3.down_proj.weight,
++        #                                       expert_layer4.gate_proj.weight, expert_layer4.up_proj.weight, expert_layer4.down_proj.weight)
+         
+         
+-        # batch_size, sequence_length, hidden_dim = hidden_states.shape
+-        # hidden_states = hidden_states.view(-1, hidden_dim)
+-        # router_logits = self.gate(hidden_states)
+-        # router_scores=mint.zeros_like(router_logits)
+-        # routing_weights = F.softmax(router_logits, dim=-1, dtype=mindspore.float32)
+-        # routing_weights, selected_experts = mint.topk(routing_weights, self.top_k, dim=-1)
+-        # if self.norm_topk_prob:
+-        #     routing_weights /= ops.sum(routing_weights, dim=-1, keepdim=True)
+-        # routing_weights = routing_weights.to(hidden_states.dtype)
+-        # router_scores=mint.scatter_add(router_scores,-1,selected_experts,routing_weights)
++        batch_size, sequence_length, hidden_dim = hidden_states.shape
++        hidden_states = hidden_states.view(-1, hidden_dim)
++        router_logits = self.gate(hidden_states)
++        router_scores=mint.zeros_like(router_logits)
++        routing_weights = F.softmax(router_logits, dim=-1, dtype=mindspore.float16)
++        routing_weights, selected_experts = mint.topk(routing_weights, self.top_k, dim=-1)
++        if self.norm_topk_prob:
++            routing_weights /= ops.sum(routing_weights, dim=-1, keepdim=True)
++        routing_weights = routing_weights.to(hidden_states.dtype)
++        router_scores=mint.scatter_add(router_scores,-1,selected_experts,routing_weights)
+ 
+-        # final_hidden_states = self.act(mint.matmul(hidden_states, self.w1))*mint.matmul(hidden_states, self.w3)
+-        # final_hidden_states = mint.bmm(final_hidden_states, self.w2)*ops.transpose(router_scores,0,1).unsqueeze(-1)
+-        # final_hidden_states = mint.sum(final_hidden_states,dim=0)
++        final_hidden_states = self.act(mint.matmul(hidden_states, self.w1))*mint.matmul(hidden_states, self.w3)
++        final_hidden_states = mint.bmm(final_hidden_states, self.w2)*ops.transpose(router_scores,0,1).unsqueeze(-1)
++        final_hidden_states = mint.sum(final_hidden_states,dim=0)
++        
++        
+         
+ 
+         shared_expert_output = self.shared_expert(hidden_states)
+@@ -847,27 +880,27 @@ class Qwen2MoeModel(Qwen2MoePreTrainedModel):
+         cache_position: Optional[mindspore.Tensor] = None,
+     ) -> Union[Tuple, MoeModelOutputWithPast]:
+         
+-        # if not self.is_combined:
+-        #     for i in range(len(self.layers)):
+-        #         decoder_layer = self.layers[i]
+-        #         if type(decoder_layer.mlp) == Qwen2MoeSparseMoeBlock:
+-        #             # for j in range(self.config.n_routed_experts):
+-        #             #     m1 = decoder_layer.mlp.experts[j].gate_proj.weight.T.mean()
+-        #             #     m2 = decoder_layer.mlp.experts[j].down_proj.weight.T.mean()
+-        #             #     m3 = decoder_layer.mlp.experts[j].up_proj.weight.T.mean()
+-        #             #     print(m1+m2+m3)
+-        #             decoder_layer.mlp.w1=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].gate_proj.weight.T for i in range(self.config.num_experts)]),requires_grad=False)
+-        #             decoder_layer.mlp.w2=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].down_proj.weight.T for i in range(self.config.num_experts)]),requires_grad=False)
+-        #             decoder_layer.mlp.w3=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].up_proj.weight.T for i in range(self.config.num_experts)]),requires_grad=False)
+-        #             # decoder_layer.mlp.w1=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].gate_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
+-        #             # decoder_layer.mlp.w2=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].down_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
+-        #             # decoder_layer.mlp.w3=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].up_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
++        if not self.is_combined:
++            for i in range(len(self.layers)):
++                decoder_layer = self.layers[i]
++                if type(decoder_layer.mlp) == Qwen2MoeSparseMoeBlock:
++                    # for j in range(self.config.n_routed_experts):
++                    #     m1 = decoder_layer.mlp.experts[j].gate_proj.weight.T.mean()
++                    #     m2 = decoder_layer.mlp.experts[j].down_proj.weight.T.mean()
++                    #     m3 = decoder_layer.mlp.experts[j].up_proj.weight.T.mean()
++                    #     print(m1+m2+m3)
++                    decoder_layer.mlp.w1=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].gate_proj.weight.T for i in range(self.config.num_experts)]),requires_grad=False)
++                    decoder_layer.mlp.w2=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].down_proj.weight.T for i in range(self.config.num_experts)]),requires_grad=False)
++                    decoder_layer.mlp.w3=nn.Parameter(mint.stack([decoder_layer.mlp.experts[i].up_proj.weight.T for i in range(self.config.num_experts)]),requires_grad=False)
++                    # decoder_layer.mlp.w1=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].gate_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    # decoder_layer.mlp.w2=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].down_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
++                    # decoder_layer.mlp.w3=nn.Parameter(self.stack([self.transpose(decoder_layer.mlp.experts[i].up_proj.weight, (1,0)) for i in range(self.config.n_routed_experts)]),requires_grad=False)
+                     
+-        #             del decoder_layer.mlp.experts
+-        #             gc.collect()
+-        #             decoder_layer.mlp.experts=None
+-        #             print(f'================decoder_layer {i} combine finished')
+-        #     self.is_combined=True
++                    del decoder_layer.mlp.experts
++                    gc.collect()
++                    decoder_layer.mlp.experts=None
++                    print(f'================decoder_layer {i} combine finished')
++            self.is_combined=True
+         
+         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+         output_router_logits = (
+-- 
+2.47.1.windows.2
+
