@@ -7,9 +7,13 @@
 | **总分** | **1224.0754** |
 
 判题机器执行结果如下：
+
 Qwen1.5-MoE-A2.7B-Chat:
+
 "avg_prefill_latency": 0.07618347803751628, "avg_decode_latency": 0.0671661638419687
+
 deepseek-moe-16b-chat:
+
 "avg_prefill_latency": 0.11087759335835774, "avg_decode_latency": 0.10076366447971156
 
 本次moe赛题，总结来说我一共尝试过三种主要的方案：
